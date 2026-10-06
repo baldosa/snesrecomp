@@ -222,6 +222,14 @@ void interp_bridge_reset_dynamic_cache(void);
  * boundaries before unwinding to the owning interpreter. */
 int interp_bridge_lle_master_deadline_reached(const CpuState *cpu);
 
+/* Native entry hand-off (default off). When enabled, a top-level bridge run
+ * that starts at a compiled entry -- the frame driver's resume PC or an
+ * interrupt vector -- runs it compiled through the dispatch ABI, so caller
+ * continuations that are themselves compiled entries run natively too.
+ * Ports enable it once their analysis covers resume and continuation PCs. */
+void interp_bridge_set_native_handoff(int enabled);
+int interp_bridge_depth(void);
+
 /* Execute an architectural interrupt handler through its terminal RTI. The
  * caller has already materialized the hardware interrupt frame. */
 int interp_bridge_run_interrupt(CpuState *cpu, uint32_t entry_pc24);

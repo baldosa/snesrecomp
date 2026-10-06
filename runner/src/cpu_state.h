@@ -610,6 +610,18 @@ RecompReturn cpu_dispatch_pc_from(CpuState *cpu, uint32 pc24,
                                   uint16 entry_s_for_miss_restore,
                                   uint32 source_pc24);
 
+/* Native hand-off chain capture (interp_bridge native entry hand-off). A
+ * dispatch-ABI chain the bridge starts at a resume or interrupt entry has no
+ * compiled caller to unwind to: when its RTS/RTL pops a return address with
+ * no compiled variant, that address is where the guest continues. While
+ * g_dispatch_handoff_depth equals the current bridge depth such a miss is
+ * recorded in g_dispatch_handoff_miss_pc24 (g_dispatch_handoff_missed = 1)
+ * with S left as the guest set it, and the chain returns NORMAL to the bridge,
+ * which interprets on from there. 0 = no hand-off active. */
+extern int g_dispatch_handoff_depth;
+extern int g_dispatch_handoff_missed;
+extern uint32 g_dispatch_handoff_miss_pc24;
+
 /* Runtime-pointer JSR (abs,X) call: paired host-call dispatch of a WRAM
  * handler pointer the static pass cannot enumerate (SM enemy/PLM/eproj AI
  * instruction-list interpreters). Pushes the 2-byte JSR return frame,

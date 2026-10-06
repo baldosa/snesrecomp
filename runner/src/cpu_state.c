@@ -1118,6 +1118,16 @@ static RecompReturn (*_cpu_dispatch_lookup(CpuState *cpu, uint32 pc24))(CpuState
     return NULL;
 }
 
+int g_dispatch_handoff_depth = 0;
+int g_dispatch_handoff_missed = 0;
+uint32 g_dispatch_handoff_miss_pc24 = 0;
+
+static int dispatch_handoff_capturing(void) {
+    extern int interp_bridge_depth(void);
+    return g_dispatch_handoff_depth != 0 &&
+           g_dispatch_handoff_depth == interp_bridge_depth();
+}
+
 RecompReturn cpu_dispatch_pc_from(CpuState *cpu, uint32 pc24,
                                   uint16 entry_s_for_miss_restore,
                                   uint32 source_pc24) {
@@ -1152,6 +1162,15 @@ RecompReturn cpu_dispatch_pc_from(CpuState *cpu, uint32 pc24,
     }
     _dispatch_log_record(pc24, source_pc24, mx_idx, fp != NULL, via_mirror);
     if (fp == NULL) {
+        if (dispatch_handoff_capturing()) {
+            /* End of a native hand-off chain: the bridge interprets on from
+             * the popped return address; S already reflects the pop. */
+            g_dispatch_handoff_missed = 1;
+            g_dispatch_handoff_miss_pc24 = pc24;
+            cpu->host_return_valid = 0;
+            cpu->PB = (uint8)(pc24 >> 16);
+            return RECOMP_RETURN_NORMAL;
+        }
         if (known_entry) {
             /* The manifest knows this is a function boundary, but deliberately
              * emitted no body for the live M/X state.  That is not a return

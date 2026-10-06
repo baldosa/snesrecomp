@@ -783,6 +783,11 @@ static void lle_unwind_arm(uint32_t pc24, int owner_depth, int is_deadline,
 }
 
 int interp_bridge_in_lle_scheduler(void) { return s_lle_sched_depth > 0; }
+int interp_bridge_depth(void) { return s_interp_bridge_depth; }
+
+static int s_native_handoff_enabled;
+void interp_bridge_set_native_handoff(int enabled) { s_native_handoff_enabled = enabled != 0; }
+
 /* A hardware wait can be reached inside an AOT body's nested fallback, not
  * just in the outer scheduler. Preserve the guest continuation and hand it
  * outward through the existing paired-call unwind until the host can run. */
@@ -1356,6 +1361,8 @@ enum { TIER2_KIND_DISPATCH = 0, TIER2_KIND_INDIRECT_GOTO = 1,
 static void tier2_record(uint32_t site, uint32_t target, uint8_t mx,
                          uint8_t kind, int clean);
 static uint8_t tier2_entry_mx(const CpuState *cpu);
+static int tier2_discover(uint32_t site, uint32_t target, uint8_t mx,
+                          uint8_t kind, int outcome);
 
 /* Core: interpret from entry_pc24 until an RTS/RTL leaves cpu->S strictly
  * above `s_exit` (the routine returned to its caller). `s_exit` is the FRAME
@@ -1471,6 +1478,101 @@ static void interp_hist_init(void) {
     }
 }
 #endif
+
+/* Native entry hand-off (interp_bridge_set_native_handoff).
+ *
+ * The interpreter normally reaches compiled code only through calls
+ * (JSR/JSL bounce). A top-level run that STARTS at a compiled entry -- the
+ * frame driver resuming at a deadline-yield PC, or an interrupt vector --
+ * would otherwise interpret that routine and every caller continuation it
+ * returns into, forever: a main loop parked in its vblank wait never leaves
+ * the interpreter. Here such an entry runs compiled through the dispatch ABI
+ * (hrv = 0): each RTS/RTL re-dispatches on the popped return address, so a
+ * chain of compiled continuations runs natively. The chain ends by
+ *   - a frame-deadline unwind: publish the resume PC, return to the driver;
+ *   - a return to this interpreter owner (the compiled RTS crossed the
+ *     owner's stack): interpret on at the unwind PC;
+ *   - a popped return address with no compiled variant (captured by
+ *     cpu_dispatch_pc_from / interp_tier_dispatch_popped_return): interpret
+ *     on from there, recording it as coverage so it can become a root;
+ *   - the RTI of an interrupt entry.
+ * Returns 1 when the run is finished, 0 to keep interpreting at in->pc. */
+static int bridge_native_handoff(CpuState *cpu, Interp816 *in, uint32_t target,
+                                 uint32_t yield_pc, int stop_on_rti) {
+    if (s_apu_pending_master >= bridge_bounce_flush_thresh())
+        bridge_apu_flush(cpu);
+    const int _apu_drv = g_interp_apu_driving;
+    const int _saved_bounce_base = s_interp_bounce_recomp_base;
+    const int _saved_bounce_owner = s_interp_bounce_owner_depth;
+    const int _saved_handoff = g_dispatch_handoff_depth;
+    g_interp_apu_driving = 0;
+    s_interp_bounce_recomp_base = g_recomp_stack_top;
+    s_interp_bounce_owner_depth = s_interp_bridge_depth;
+    g_dispatch_handoff_depth = s_interp_bridge_depth;
+    g_dispatch_handoff_missed = 0;
+    s_lle_next_unwind_is_deadline = 0;
+    g_interp_bridge_bounces++;
+    g_interp_wlog_pc24 = 0;
+    static int s_diag = -1;
+    if (s_diag < 0) s_diag = getenv("SNESRECOMP_HANDOFF_DIAG") ? 1 : 0;
+    const uint16_t s_before = cpu->S;
+    const RecompReturn r = cpu_dispatch_pc_from(cpu, target, cpu->S, target);
+    if (s_diag)
+        fprintf(stderr, "[handoff] f=%d $%06X %s S=$%04X->$%04X r=%d missed=%d unwind=%d/%d pc=$%06X\n",
+                snes_frame_counter, (unsigned)target, stop_on_rti ? "irq" : "resume",
+                (unsigned)s_before, (unsigned)cpu->S, (int)r, g_dispatch_handoff_missed,
+                s_lle_unwind_active, s_lle_unwind_is_deadline,
+                (unsigned)(g_dispatch_handoff_missed ? g_dispatch_handoff_miss_pc24 : s_lle_unwind_pc24));
+    g_dispatch_handoff_depth = _saved_handoff;
+    s_interp_bounce_owner_depth = _saved_bounce_owner;
+    s_interp_bounce_recomp_base = _saved_bounce_base;
+    g_interp_apu_driving = _apu_drv;
+    sync_cpu_to_interp(cpu, in);
+    if (r == RECOMP_RETURN_NORMAL) {
+        if (g_dispatch_handoff_missed) {
+            const uint32_t pc = g_dispatch_handoff_miss_pc24 & 0xFFFFFFu;
+            g_dispatch_handoff_missed = 0;
+            tier2_discover(target, pc, tier2_entry_mx(cpu), TIER2_KIND_DISPATCH, -1);
+            in->k  = (uint8_t)(pc >> 16);
+            in->pc = (uint16_t)pc;
+            return 0;
+        }
+        if (stop_on_rti)
+            return 1;  /* compiled RTI consumed the interrupt frame */
+        fprintf(stderr, "[native_handoff] chain from $%06X returned NORMAL "
+                "without a continuation (S=$%04X)\n", (unsigned)target,
+                (unsigned)cpu->S);
+        Die("native hand-off lost the guest continuation");
+    }
+    if (s_lle_unwind_active) {
+        if (s_lle_unwind_is_deadline) {
+            if (yield_pc) {
+                lle_resume_set(s_lle_unwind_pc24,
+                               INTERP_RESUME_SITE_DEADLINE_UNWIND, in->sp);
+                s_lle_unwind_active = 0;
+                s_lle_unwind_owner_depth = 0;
+                s_lle_unwind_is_deadline = 0;
+            }
+            bridge_apu_flush(cpu);
+            return 1;
+        }
+        if (s_lle_unwind_owner_depth == s_interp_bridge_depth) {
+            const uint32_t pc = s_lle_unwind_pc24 & 0xFFFFFFu;
+            resume_ring_note(INTERP_RESUME_SITE_YIELD_UNWIND,
+                             INTERP_RESUME_KIND_UNWIND_CONSUME, target, pc, cpu->S);
+            s_lle_unwind_active = 0;
+            s_lle_unwind_owner_depth = 0;
+            s_lle_unwind_is_deadline = 0;
+            in->k  = (uint8_t)(pc >> 16);
+            in->pc = (uint16_t)pc;
+            return 0;
+        }
+    }
+    fprintf(stderr, "[native_handoff] chain from $%06X returned %d (S=$%04X)\n",
+            (unsigned)target, (int)r, (unsigned)cpu->S);
+    Die("native hand-off returned an unexpected status");
+    return 1;
+}
 
 static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                                  uint16_t s_exit, uint32_t *out_landing,
@@ -1665,6 +1767,22 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
             sync_interp_to_cpu(&in,cpu);
             bridge_apu_flush(cpu);
             return 1;
+        }
+        /* Native entry hand-off: only at the first step of a top-level run
+         * (frame resume or interrupt entry), in native mode (compiled
+         * variants are keyed by M/X only), and never with H/V IRQs armed:
+         * compiled code bounds itself by the frame deadline only, so it must
+         * not run across a raster IRQ the interpreter would stop for. */
+        if (steps == 0 && s_native_handoff_enabled && s_interp_bridge_depth == 1 &&
+            (auto_quiescent || stop_on_rti) && !in.e &&
+            !(g_snes && (g_snes->hIrqEnabled || g_snes->vIrqEnabled))) {
+            sync_interp_to_cpu(&in, cpu);
+            if (cpu_dispatch_has_entry(cpu, pc_before) &&
+                !lle_bounce_target_excluded(pc_before)) {
+                if (bridge_native_handoff(cpu, &in, pc_before, yield_pc, stop_on_rti))
+                    return 1;
+                continue;  /* interpret on at in.pc */
+            }
         }
         /* Star Ocean battle $00D9 work-wait specialization. This does not skip
          * the wait; it executes the LDA $00D9 / BEQ loop with the same master
@@ -3529,6 +3647,17 @@ RecompReturn interp_tier_dispatch_popped_return(CpuState *cpu,
     interp_tier_note(target_pc24);
     const uint8_t mx = tier2_entry_mx(cpu);
     tier2_discover(site_pc24, target_pc24, mx, TIER2_KIND_DISPATCH, -1);
+
+    /* End of a native hand-off chain (see bridge_native_handoff): hand the
+     * continuation back to the owning bridge frame instead of nesting one. */
+    if (g_dispatch_handoff_depth != 0 &&
+        g_dispatch_handoff_depth == s_interp_bridge_depth) {
+        g_dispatch_handoff_missed = 1;
+        g_dispatch_handoff_miss_pc24 = target_pc24;
+        cpu->host_return_valid = 0;
+        cpu->PB = (uint8)(target_pc24 >> 16);
+        return RECOMP_RETURN_NORMAL;
+    }
 
     /* cpu_dispatch_pc_from is entered after the previous compiled routine has
      * already popped the RTS/RTL that selected target_pc24.  The target thus
