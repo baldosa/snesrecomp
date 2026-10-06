@@ -1591,7 +1591,10 @@ uint8 ReadRegOpenBus(uint16 reg, uint8 open_bus) {
   if (reg >= 0x2000 && reg < 0x2008) {
     return msu1_enabled() ? msu1_read(reg) : open_bus;
   }
-  if (reg == 0x2137)
+  /* HVBJOY under a clock-driven beam reports the beam at this read's master
+   * clock (the interpreter tier already walks the beam per opcode). */
+  if (reg == 0x2137 ||
+      (reg == 0x4212 && snes_beam_clock_driven() && !g_interp_apu_driving))
     snes_sync_master_clock(g_snes, g_cpu.master_cycles);
   if (reg >= 0x3000 && reg < 0x3300 && g_snes->cart->type == CART_SUPERFX) {
     cart_sync_coprocessors(g_snes->cart, g_cpu.master_cycles);

@@ -73,6 +73,10 @@ void snes_set_raster_irq_beam_enabled(bool enabled) {
   s_raster_irq_beam_off = !enabled;
 }
 
+static bool s_beam_clock_driven;
+void snes_set_beam_clock_driven(bool driven) { s_beam_clock_driven = driven; }
+bool snes_beam_clock_driven(void) { return s_beam_clock_driven; }
+
 static SnesMasterClockChargeHook s_master_clock_charge_hook;
 static SnesWramWriteLogHook s_wram_write_log_hook;
 
@@ -650,8 +654,11 @@ uint8_t snes_readReg(Snes* snes, uint16_t adr) {
        * opcode's measured master clocks. Applying the legacy static-recomp
        * polling tick as well doubles time in $4212 wait loops (SMRPG's boot
        * fades completed in half the reference frame count). */
+      /* A clock-driven beam (snes_set_beam_clock_driven) was already synced
+       * to the reading instruction's master clock by the register read path;
+       * the polling tick would advance it twice. */
       extern int g_interp_apu_driving;
-      if (!g_interp_apu_driving)
+      if (!g_interp_apu_driving && !s_beam_clock_driven)
         snes_advance_beam(snes, 64, false);
       // Bit 7 = vblank. The real frame loop drives vblank via inNmi, not
       // inVblank (inVblank is never set true), so on the static-recomp
