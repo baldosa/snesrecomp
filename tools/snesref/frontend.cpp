@@ -174,7 +174,7 @@ struct InputEvent {
 };
 static std::vector<InputEvent> g_input_events;
 static bool g_scripted_input = false;
-static uint16_t g_scripted_mask = 0;
+static uint32_t g_scripted_mask = 0;   // pad 1 in bits 0-15, pad 2 in 16-31
 
 static bool load_input_file(const char* path) {
     FILE* f = fopen(path, "r");
@@ -255,17 +255,17 @@ static bool dump_system_ram() {
     return ok;
 }
 
-static uint16_t g_script_frame_mask = 0;   // set by script_tick() each frame
+static uint32_t g_script_frame_mask = 0;   // set by script_tick() each frame
 
 static void update_scripted_input() {
     if (!g_scripted_input) return;
-    uint16_t next = g_script_frame_mask;
+    uint32_t next = g_script_frame_mask;
     for (const InputEvent& event : g_input_events) {
         if (g_frame >= event.start && g_frame - event.start < event.duration)
             next |= event.mask;
     }
     if (next != g_scripted_mask) {
-        fprintf(stderr, "[input] frame=%u mask=%03x\n", g_frame, next);
+        fprintf(stderr, "[input] frame=%u mask=%03x\n", g_frame, (unsigned)next);
         g_scripted_mask = next;
     }
 }
@@ -707,7 +707,7 @@ static void  cb_input_poll(void) {}
 
 static int16_t cb_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
     (void)index;
-    if (port!=0 || device!=RETRO_DEVICE_JOYPAD) return 0;
+    if (port>1 || device!=RETRO_DEVICE_JOYPAD) return 0;
     if (g_scripted_input) {
         uint16_t bit = 0;
         switch (id) {
@@ -725,9 +725,9 @@ static int16_t cb_input_state(unsigned port, unsigned device, unsigned index, un
             case RETRO_DEVICE_ID_JOYPAD_R:      bit=0x0800; break;
             default: return 0;
         }
-        return (g_scripted_mask & bit) != 0;
+        return ((g_scripted_mask >> (16 * port)) & bit) != 0;
     }
-    if (g_headless) return 0;
+    if (g_headless || port != 0) return 0;  /* live input drives pad 1 only */
     const Uint8* ks = SDL_GetKeyboardState(nullptr);
     SDL_Scancode sc; SDL_GameControllerButton gb;
     switch (id) {
@@ -934,7 +934,7 @@ struct ScriptCmd {
     int line;
     int wait;          // idle frames before this command
     int hold;          // hold-type frame count
-    uint16_t mask;
+    uint32_t mask;
     uint32_t addr;
     std::vector<uint8_t> bytes;
     bool is16, ne;
@@ -965,8 +965,8 @@ static bool parse_hex_u32(const char* s, uint32_t* out) {
     return true;
 }
 
-static bool parse_buttons(const char* s, uint16_t* out) {
-    uint16_t m = 0;
+static bool parse_buttons(const char* s, uint32_t* out) {
+    uint32_t m = 0;
     const char* p = s;
     while (*p) {
         size_t len = strcspn(p, "+,|");
@@ -978,7 +978,10 @@ static bool parse_buttons(const char* s, uint16_t* out) {
             {"b",0x001},{"y",0x002},{"select",0x004},{"start",0x008},{"up",0x010},{"down",0x020},
             {"left",0x040},{"right",0x080},{"a",0x100},{"x",0x200},{"l",0x400},{"r",0x800} };
         bool ok = false;
-        for (auto& k : kB) if (!strcmp(part, k.n)) { m |= k.b; ok = true; break; }
+        /* "p2:" prefixes a pad-2 button, as in the recomp host's grammar. */
+        const char* name = part; unsigned shift = 0;
+        if (!strncmp(part, "p2:", 3)) { name = part + 3; shift = 16; }
+        for (auto& k : kB) if (!strcmp(name, k.n)) { m |= (uint32_t)k.b << shift; ok = true; break; }
         if (!ok) { fprintf(stderr, "script: unknown button '%s'\n", part); return false; }
         p += len;
         if (*p) p++;
@@ -1084,7 +1087,7 @@ static void script_advance() {
 }
 
 // Called at each frame boundary (before retro_run); returns this frame's mask.
-static uint16_t script_tick() {
+static uint32_t script_tick() {
     uint8_t* ram = (uint8_t*)p_retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
     size_t ram_n = p_retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
     for (const ForcePoke& fp : g_force_pokes)
