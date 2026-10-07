@@ -62,6 +62,7 @@ def generate(
     no_host_root_scan: bool = False,
     source_roots: Optional[Sequence[pathlib.Path]] = None,
     profile_manifests: Optional[Sequence[pathlib.Path]] = None,
+    historical_profile_manifests: Optional[Sequence[pathlib.Path]] = None,
     legacy_profile_rom_sha256: Optional[str] = None,
     analysis_backend: str = "native",
     expected_crc32: Optional[str] = None,
@@ -119,6 +120,11 @@ def generate(
     for manifest in profile_manifests or ():
         emit_args.extend(
             ["--profile-manifest", str(pathlib.Path(manifest).resolve())])
+    # Older captures (other builds) seed analysis without merging identities:
+    # v2_emit validates each independently (docs/COVERAGE_FEEDBACK.md).
+    for manifest in historical_profile_manifests or ():
+        emit_args.extend(
+            ["--historical-profile-manifest", str(pathlib.Path(manifest).resolve())])
     if legacy_profile_rom_sha256:
         emit_args.extend(["--legacy-profile-rom-sha256", legacy_profile_rom_sha256])
 
@@ -237,6 +243,10 @@ def generate_command(args: argparse.Namespace, progress: ProgressReporter) -> in
                 _resolve_under(project_root, m)
                 for m in getattr(args, "profile_manifest", []) or []
             ],
+            historical_profile_manifests=[
+                pathlib.Path(m)
+                for m in getattr(args, "historical_profile_manifest", []) or []
+            ],
             legacy_profile_rom_sha256=getattr(args, "legacy_profile_rom_sha256", None),
             analysis_backend=args.analysis_backend,
             expected_crc32=args.expected_crc32,
@@ -311,6 +321,13 @@ def add_generate_parser(subparsers) -> None:
         default=[],
         help="tier-2 coverage manifest to seed optional AOT roots from "
              "(repeatable); clean call landings only, bails excluded",
+    )
+    generate_parser.add_argument(
+        "--historical-profile-manifest",
+        action="append",
+        default=[],
+        help="older coverage capture (another build) whose seeds carry "
+             "forward; validated independently, never merged (repeatable)",
     )
     generate_parser.add_argument(
         "--legacy-profile-rom-sha256",
