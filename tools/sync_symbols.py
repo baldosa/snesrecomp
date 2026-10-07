@@ -96,6 +96,36 @@ def load_symbols(path: Path) -> list[FunctionSymbol]:
     return sorted(result, key=lambda s: (s.bank, s.addr, s.name))
 
 
+def load_variants(path: Path) -> list[tuple[int, int, int]]:
+    """Extra AOT entry variants: [[variant]] tables (bank, addr, entry_m,
+    entry_x). A [[func]] carries one entry mode; a routine entered in several
+    M/X widths (a wait called with 8- and 16-bit index registers, a resume
+    point reached in both) lists the others here. Each becomes an analysis
+    root that cfg entry modes do not override. Returns sorted unique
+    (pc24, m, x)."""
+    if not path.is_file():
+        return []
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    tables = data.get("variant", [])
+    if not isinstance(tables, list):
+        raise ValueError(f"{path}: expected [[variant]] tables")
+    out = set()
+    for index, item in enumerate(tables, 1):
+        context = f"{path}: variant #{index}"
+        if not isinstance(item, dict):
+            raise ValueError(f"{context}: expected a table")
+        bank = _number(item.get("bank"), 0xFF, "bank", context)
+        addr = _number(item.get("addr"), 0xFFFF, "addr", context)
+        m = _number(item.get("entry_m"), 1, "entry_m", context)
+        x = _number(item.get("entry_x"), 1, "entry_x", context)
+        out.add((bank << 16 | addr, m, x))
+    return sorted(out)
+
+
 def _split_block(text: str, path: Path):
     lines = text.splitlines(keepends=True)
     starts = [i for i, line in enumerate(lines)

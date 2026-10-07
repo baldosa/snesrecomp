@@ -178,3 +178,29 @@ def test_cli_generates_unreachable_hirom_symbol_and_honors_tier_toggle(tmp_path)
     assert not any(node["disposition"] == "aot_eligible"
                    for node in manifest["nodes"].values())
     assert "008000:M1X1" not in manifest["roots"]
+
+
+def test_variant_tables_add_extra_entry_modes(tmp_path):
+    from sync_symbols import load_variants
+    (tmp_path / "symbols.toml").write_text(
+        '[[func]]\nname = "Spin"\nbank = 130\naddr = "d4ee"\nemit = true\n'
+        'entry_m = 1\nentry_x = 0\n'
+        '[[variant]]\nbank = 130\naddr = "d4ee"\nentry_m = 1\nentry_x = 1\n'
+        '[[variant]]\nbank = 130\naddr = "d4ee"\nentry_m = 1\nentry_x = 1\n',
+        encoding="utf-8")
+    assert load_variants(tmp_path / "symbols.toml") == [(0x82D4EE, 1, 1)]
+
+
+def test_variant_tables_validate_modes(tmp_path):
+    from sync_symbols import load_variants
+    (tmp_path / "symbols.toml").write_text(
+        '[[variant]]\nbank = 0\naddr = "8000"\nentry_m = 2\nentry_x = 0\n',
+        encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_variants(tmp_path / "symbols.toml")
+
+
+def test_symbols_without_variants_have_none(tmp_path):
+    from sync_symbols import load_variants
+    write_symbols(tmp_path, ("Start", 0, 0x8000, True))
+    assert load_variants(tmp_path / "symbols.toml") == []

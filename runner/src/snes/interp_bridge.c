@@ -1539,7 +1539,10 @@ static int bridge_native_handoff(CpuState *cpu, Interp816 *in, uint32_t target,
         if (g_dispatch_handoff_missed) {
             const uint32_t pc = g_dispatch_handoff_miss_pc24 & 0xFFFFFFu;
             g_dispatch_handoff_missed = 0;
-            tier2_discover(target, pc, tier2_entry_mx(cpu), TIER2_KIND_DISPATCH, -1);
+            /* Recorded as a landing (site == target), like an unentered
+             * resume PC: the guest really continued here, so a later
+             * analysis can root the continuation. */
+            tier2_discover(pc, pc, tier2_entry_mx(cpu), TIER2_KIND_DISPATCH, -1);
             in->k  = (uint8_t)(pc >> 16);
             in->pc = (uint16_t)pc;
             return 0;
@@ -1567,6 +1570,8 @@ static int bridge_native_handoff(CpuState *cpu, Interp816 *in, uint32_t target,
             const uint32_t pc = s_lle_unwind_pc24 & 0xFFFFFFu;
             resume_ring_note(INTERP_RESUME_SITE_YIELD_UNWIND,
                              INTERP_RESUME_KIND_UNWIND_CONSUME, target, pc, cpu->S);
+            if (!cpu_dispatch_has_entry(cpu, pc))
+                tier2_discover(pc, pc, tier2_entry_mx(cpu), TIER2_KIND_DISPATCH, -1);
             s_lle_unwind_active = 0;
             s_lle_unwind_owner_depth = 0;
             s_lle_unwind_is_deadline = 0;

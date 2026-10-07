@@ -40,7 +40,7 @@ from v2_analyze import (  # noqa: E402
     ensure_native_analyzer,
 )
 from disassembly_layout import configured_authority  # noqa: E402
-from sync_symbols import sync_symbols  # noqa: E402
+from sync_symbols import load_variants, sync_symbols  # noqa: E402
 
 
 def _tree_digest(paths) -> str:
@@ -239,14 +239,17 @@ def main() -> int:
         symbols = sync_symbols(pathlib.Path(args.cfg_dir).resolve())
         symbol_roots = tuple(VariantKey(s.pc24, s.entry_m, s.entry_x)
                              for s in symbols if s.emit)
+        variant_roots = tuple(VariantKey(pc24, m, x) for pc24, m, x in load_variants(
+            pathlib.Path(args.cfg_dir).resolve() / "symbols.toml"))
         with configured_authority(args.rom, args.cfg_dir) as (cfg_dir, probe_modes):
             args.disassembly_entry_modes |= probe_modes
-            return _generate(args, parser, cfg_dir, symbol_roots=symbol_roots)
+            return _generate(args, parser, cfg_dir, symbol_roots=symbol_roots,
+                             variant_roots=variant_roots)
     except (ValueError, KeyError, OSError) as exc:
         parser.error(str(exc))
 
 
-def _generate(args, parser, cfg_dir, *, symbol_roots=()):
+def _generate(args, parser, cfg_dir, *, symbol_roots=(), variant_roots=()):
     shard_threshold_bytes = max(0, args.bank_shard_threshold_kib) * 1024
     shard_pc_span = max(0, args.bank_shard_pc_span)
 
@@ -272,6 +275,9 @@ def _generate(args, parser, cfg_dir, *, symbol_roots=()):
     symbol_roots = tuple(
         VariantKey(key.pc24, *entry_modes.get(key.pc24, (key.m, key.x)))
         for key in symbol_roots)
+    # [[variant]] roots name an exact entry mode: never collapsed onto the
+    # cfg entry mode of the same PC.
+    symbol_roots = symbol_roots + tuple(k for k in variant_roots if k not in symbol_roots)
     # Materialize ram_routine blobs into the ROM image + reloc registry so
     # their WRAM entries decode as ordinary AOT bodies. The native analyzer
     # seeds the same WRAM roots from cfg; passing them as additional roots
