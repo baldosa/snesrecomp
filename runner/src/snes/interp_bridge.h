@@ -228,6 +228,7 @@ int interp_bridge_lle_master_deadline_reached(const CpuState *cpu);
  * continuations that are themselves compiled entries run natively too.
  * Ports enable it once their analysis covers resume and continuation PCs. */
 void interp_bridge_set_native_handoff(int enabled);
+int interp_bridge_poll_yields_to_lle(void);
 int interp_bridge_depth(void);
 
 /* Execute an architectural interrupt handler through its terminal RTI. The

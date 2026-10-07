@@ -787,6 +787,13 @@ int interp_bridge_depth(void) { return s_interp_bridge_depth; }
 
 static int s_native_handoff_enabled;
 void interp_bridge_set_native_handoff(int enabled) { s_native_handoff_enabled = enabled != 0; }
+/* Tight memory polls (codegen: has_lle_memory_poll) hand back to the
+ * interpreter under an LLE scheduler so it can park them. With the native
+ * hand-off enabled they stay compiled and spin to the frame deadline like any
+ * other block -- the deadline check at each block head yields for NMI/IRQ. */
+int interp_bridge_poll_yields_to_lle(void) {
+    return s_lle_sched_depth > 0 && !s_native_handoff_enabled;
+}
 
 /* A hardware wait can be reached inside an AOT body's nested fallback, not
  * just in the outer scheduler. Preserve the guest continuation and hand it
@@ -1583,6 +1590,7 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
                                  const uint32_t *stop_pcs, int n_stop,
                                  int stop_on_rti) {
     const int auto_quiescent = yield_pc == 0xFFFFFFFEu;
+    uint32_t handoff_skip_pc = 0xFFFFFFFFu;
     /* Local interpreter context → nesting (an AOT bounce that itself traps and
      * re-enters the bridge) gets its own frame; no shared mutable interp. */
     Interp816 in;
@@ -1768,21 +1776,33 @@ static int _interp_run_core(CpuState *cpu, uint32_t entry_pc24,
             bridge_apu_flush(cpu);
             return 1;
         }
-        /* Native entry hand-off: only at the first step of a top-level run
-         * (frame resume or interrupt entry), in native mode (compiled
-         * variants are keyed by M/X only), and never with H/V IRQs armed:
-         * compiled code bounds itself by the frame deadline only, so it must
-         * not run across a raster IRQ the interpreter would stop for. */
-        if (steps == 0 && s_native_handoff_enabled && s_interp_bridge_depth == 1 &&
-            (auto_quiescent || stop_on_rti) && !in.e &&
+        /* Native entry hand-off: in a top-level run (frame resume or
+         * interrupt entry) hand control to compiled code at the first
+         * instruction boundary that has a compiled entry for the live M/X --
+         * the entry PC itself, or wherever interpretation reaches one after a
+         * chain handed back. Native mode only (compiled variants are keyed by
+         * M/X alone), and never with H/V IRQs armed: compiled code bounds
+         * itself by the frame deadline only, so it must not run across a
+         * raster IRQ the interpreter would stop for. A resume PC with no
+         * entry is recorded as coverage so the next analysis can root it. */
+        if (s_native_handoff_enabled && s_interp_bridge_depth == 1 &&
+            (auto_quiescent || stop_on_rti) && !in.e && pc_before != handoff_skip_pc &&
             !(g_snes && (g_snes->hIrqEnabled || g_snes->vIrqEnabled))) {
             sync_interp_to_cpu(&in, cpu);
             if (cpu_dispatch_has_entry(cpu, pc_before) &&
                 !lle_bounce_target_excluded(pc_before)) {
+                const uint16_t sp_before = in.sp;
                 if (bridge_native_handoff(cpu, &in, pc_before, yield_pc, stop_on_rti))
                     return 1;
+                /* No progress (handed straight back at the same PC and S):
+                 * interpret this instruction instead of looping. */
+                if ((((uint32_t)in.k << 16) | in.pc) == pc_before && in.sp == sp_before)
+                    handoff_skip_pc = pc_before;
                 continue;  /* interpret on at in.pc */
             }
+            if (steps == 0 && auto_quiescent)
+                tier2_discover(pc_before, pc_before, tier2_entry_mx(cpu),
+                               TIER2_KIND_DISPATCH, -1);
         }
         /* Star Ocean battle $00D9 work-wait specialization. This does not skip
          * the wait; it executes the LDA $00D9 / BEQ loop with the same master
@@ -3599,8 +3619,9 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
     /* Unwind watermark is the enclosing function's entry_s (NOT the current S:
      * a PEA+JMP idiom may have pushed a return below entry). Exit when the
      * function RTS/RTLs past entry_s. */
+    uint32_t return_pc = 0;
     int ok = interp_bridge_run_ex2(cpu, target_pc24 & 0xFFFFFF, entry_s,
-                                   &landing, NULL, 0, 0, 0, 0, NULL, 0, 0);
+                                   &landing, &return_pc, 0, 0, 0, 0, NULL, 0, 0);
     if (wlog_this) wlog_scope_exit();
     /* For an indirect goto the recorded target is where the JMP actually
      * resolved (the dynamically computed entry); for a dispatch default the
@@ -3627,6 +3648,14 @@ RecompReturn interp_tier_dispatch_balanced(CpuState *cpu, uint32_t target_pc24,
          * stack position into the existing SKIP_N host-unwind contract.  A
          * normal tail return cannot match an ancestor's post-return S and
          * remains NORMAL. */
+        /* End of a native hand-off chain: a dispatch-ABI body (hrv 0) has
+         * no compiled caller; hand the return address to the bridge. */
+        if (hrv == 0 && return_pc && g_dispatch_handoff_depth != 0 &&
+            g_dispatch_handoff_depth == s_interp_bridge_depth) {
+            g_dispatch_handoff_missed = 1;
+            g_dispatch_handoff_miss_pc24 = return_pc & 0xFFFFFFu;
+            return RECOMP_RETURN_NORMAL;
+        }
         const uint16_t expected_post_s = (uint16_t)(entry_s + hrv);
         if (cpu->S != expected_post_s) {
             int skip = cpu_resolve_post_return_skip(cpu->S);

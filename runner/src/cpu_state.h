@@ -770,6 +770,8 @@ RecompReturn interp_tier_dispatch_bank_miss(CpuState *cpu, uint32 addr_pc24,
  * host stack unwinds. */
 #define RECOMP_RETURN_LLE_UNWIND_BASE 0x40000000
 int interp_bridge_in_lle_scheduler(void);
+/* Tight memory polls yield to the LLE scheduler unless native hand-off is on. */
+int interp_bridge_poll_yields_to_lle(void);
 int interp_bridge_lle_master_deadline_reached(const CpuState *cpu);
 RecompReturn interp_bridge_lle_yield_unwind(CpuState *cpu, uint32 resume_pc24);
 uint32 interp_bridge_lle_resume_pc(void);

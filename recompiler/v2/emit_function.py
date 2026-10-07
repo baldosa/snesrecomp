@@ -2034,7 +2034,7 @@ def emit_function(rom: bytes, bank: int, start: int,
     )
     src.append('  }')
     if has_lle_memory_poll:
-        src.append('  if (interp_bridge_in_lle_scheduler()) {')
+        src.append('  if (interp_bridge_poll_yields_to_lle()) {')
         src.append('    RecompStackPopYield();')
         src.append(
             f'    return interp_bridge_lle_yield_unwind(cpu, {_transfer_target_expr(fn_entry_pc, False)});'
