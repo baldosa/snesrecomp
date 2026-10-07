@@ -10,6 +10,14 @@
  * beside the executable). Behaviour a port relied on is preserved exactly;
  * where this file differs from that main.c the comment says why.
  */
+/* No desktop OpenGL presenter on Android or the web: they present through
+ * SDL's renderer (GLES / WebGL) only. */
+#if defined(__ANDROID__) || defined(__EMSCRIPTEN__)
+#define SNESRECOMP_NO_DESKTOP_GL 1
+#endif
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -164,7 +172,7 @@ static void HandleInput(int keyCode, int keyMod, bool pressed);
 static void HandleCommand(uint32 j, bool pressed);
 static void PollKeyboardControls(const uint8_t *keys);
 static void RequestScreenshot(void);
-#ifndef __ANDROID__
+#ifndef SNESRECOMP_NO_DESKTOP_GL
 void OpenGLRenderer_Create(struct RendererFuncs *funcs);
 #include "opengl.h"   /* snesrecomp_opengl_set_vsync */
 #endif
@@ -482,7 +490,7 @@ static void RendererEnumerate(void) {
   snprintf(g_renderer_id[0], kRendererNameMax, "auto");
   snprintf(g_renderer_label[0], kRendererNameMax, "Auto");
   g_renderer_count = 1;
-#ifndef __ANDROID__
+#ifndef SNESRECOMP_NO_DESKTOP_GL
   snprintf(g_renderer_id[1], kRendererNameMax, "opengl");
   snprintf(g_renderer_label[1], kRendererNameMax, "OpenGL");
   g_renderer_count = 2;
@@ -2673,7 +2681,7 @@ static void ApplyLiveSettings(const Config *before) {
       g_current_window_scale = IntMin(g_config.window_scale, kMaxWindowScale);
     ChangeWindowScale(0);
   }
-#ifndef __ANDROID__
+#ifndef SNESRECOMP_NO_DESKTOP_GL
   snesrecomp_opengl_set_vsync(VSyncInterval());
 #endif
   if (g_renderer_funcs.Reconfigure) g_renderer_funcs.Reconfigure();
@@ -2868,7 +2876,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
   g_simulation_hz = game->simulation_hz > 0 ? game->simulation_hz : SNES_HOST_NTSC_HZ;
   g_snes_width = game->frame_width > 0 ? game->frame_width : 256;
   g_snes_height = game->frame_height > 0 ? game->frame_height : 224;
-#ifndef __ANDROID__
+#ifndef SNESRECOMP_NO_DESKTOP_GL
   snesrecomp_opengl_set_viewport(game->compute_viewport);
 #endif
   const char *build_version = game->build_version ? game->build_version : "dev";
@@ -3308,7 +3316,7 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
       g_current_window_scale * WindowBaseHeight();
 
   RendererApply(RendererChoice());
-#ifndef __ANDROID__
+#ifndef SNESRECOMP_NO_DESKTOP_GL
   if (g_config.output_method == kOutputMethod_OpenGL) {
     g_win_flags |= SDL_WINDOW_OPENGL;
     snesrecomp_opengl_set_vsync(VSyncInterval());
@@ -3594,6 +3602,11 @@ error_reading:;
   host_report_breadcrumb("entering main loop");
 
   while (running) {
+#if defined(__EMSCRIPTEN__)
+    /* A browser tab owns this thread: hand it back once per frame so it can
+     * deliver input, audio and the presented canvas (-sASYNCIFY). */
+    emscripten_sleep(0);
+#endif
     g_profile_frame = frameCtr + 1;
     if (profile_requested && !g_profile && g_profile_frame >= profile_first) {
       g_profile = true;
@@ -4283,7 +4296,7 @@ static void RequestScreenshot(void) {
     return;
   s_last_screenshot_time = now;
 
-#ifdef __ANDROID__
+#ifdef SNESRECOMP_NO_DESKTOP_GL
   fprintf(stderr, "Screenshots require the desktop OpenGL backend.\n");
 #else
   if (g_config.output_method != kOutputMethod_OpenGL) {

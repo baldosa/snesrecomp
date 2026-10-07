@@ -1,4 +1,8 @@
-/* Dispatch tables for a SETUP HOST: a build with no recompiled code.
+/* Dispatch tables for a build with no recompiled code: a SETUP HOST, or an
+ * INTERPRETER HOST (runner.cmake), where every lookup missing is the point --
+ * each call then runs on the interpreter tier.
+ *
+ * Setup host:
  *
  * The runner links against g_dispatch_table / g_ram_routine_guards, which the
  * recompiler normally emits into src/gen/dispatch_v2.c. A setup host has no
@@ -20,8 +24,8 @@
 
 #include "cpu_state.h"
 
-#if !defined(SNESRECOMP_SETUP_HOST)
-#error "setup_host_dispatch.c is only compiled into SNESRECOMP_SETUP_HOST builds"
+#if !defined(SNESRECOMP_SETUP_HOST) && !defined(SNESRECOMP_INTERP_HOST)
+#error "setup_host_dispatch.c is only compiled into setup and interpreter hosts"
 #endif
 
 /* Zero known function boundaries: the binary search in cpu_dispatch_pc()

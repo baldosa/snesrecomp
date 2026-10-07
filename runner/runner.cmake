@@ -870,7 +870,30 @@ option(SNESRECOMP_SETUP_HOST
 # gen directory with the option OFF is still a hard configure error, because
 # that is a developer who forgot to regenerate, and a silent fallback there
 # would hand them a binary that cannot play and does not say why.
+# An INTERPRETER HOST is the other honest binary without recompiled code: the
+# same runner with empty dispatch tables, so every guest instruction runs on
+# the interpreter tier (the LLE floor) -- an emulator of the cartridge the
+# player loads, carrying nothing derived from any ROM. It exists for targets
+# where the setup host's local Generate & rebuild cannot run (a web page) and
+# as a reference build. It never links generated C, even when present, so a
+# public interpreter build cannot carry ROM-derived output by accident.
+option(SNESRECOMP_INTERP_HOST
+    "Build the host without recompiled code that runs the guest on the interpreter tier"
+    OFF)
+
 function(snesrecomp_target_generated_code target gen_dir)
+    if(SNESRECOMP_INTERP_HOST)
+        if(SNESRECOMP_SETUP_HOST)
+            message(FATAL_ERROR "SNESRECOMP_INTERP_HOST and SNESRECOMP_SETUP_HOST are exclusive.")
+        endif()
+        target_sources(${target} PRIVATE
+            ${SNESRECOMP_RUNNER_ROOT}/src/setup_host_dispatch.c)
+        target_compile_definitions(${target} PRIVATE SNESRECOMP_INTERP_HOST=1)
+        message(STATUS
+            "${target}: INTERPRETER HOST -- no recompiled code; the guest runs "
+            "on the interpreter tier (${gen_dir} is ignored)")
+        return()
+    endif()
     file(GLOB _gen_sources CONFIGURE_DEPENDS "${gen_dir}/*.c")
     if(_gen_sources)
         if(SNESRECOMP_SETUP_HOST)
@@ -1199,7 +1222,7 @@ function(snesrecomp_target_desktop_host target)
     else()
         snesrecomp_target_post_mortem(${target})
     endif()
-    if(NOT ANDROID)
+    if(NOT ANDROID AND NOT EMSCRIPTEN)
         snesrecomp_target_opengl(${target})
     endif()
     # Run-ahead and rewind are the host's (snes_runahead.c, snes_rewind.c,
