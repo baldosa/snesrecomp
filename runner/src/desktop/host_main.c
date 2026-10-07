@@ -329,7 +329,38 @@ static void ProfileEnd(unsigned stage, double start) {
   }
   ++g_timings[stage].count;
 }
+/* Every host-side wait goes through here. On the web it is a real yield to
+ * the browser (emscripten_sleep under ASYNCIFY, which instruments only the
+ * functions on these paths -- CMakeLists ASYNCIFY_ONLY), so the interpreter
+ * itself stays uninstrumented; SDL's own SDL_Delay is told never to suspend. */
+static void HostSleepMs(Uint32 ms) {
+#if defined(__EMSCRIPTEN__)
+  emscripten_sleep(ms);
+#else
+  SDL_Delay(ms);
+#endif
+}
+
+#if defined(__EMSCRIPTEN__)
+/* One yield to the browser until its next animation frame (vsync). Timer
+ * sleeps (setTimeout) are clamped to ~4 ms and jitter, which left the tab
+ * idle half of every frame; requestAnimationFrame paces to the display. */
+EM_ASYNC_JS(void, host_wait_animation_frame, (void), {
+  await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+});
+static double g_web_last_yield;
+#endif
+
 static void WaitUntil(double deadline) {
+#if defined(__EMSCRIPTEN__)
+  /* The loop re-checks its clock after every wait, so one vsync is enough
+   * (a 120/144 Hz display just waits again). */
+  if (MonotonicSeconds() < deadline) {
+    host_wait_animation_frame();
+    g_web_last_yield = MonotonicSeconds();
+  }
+  return;
+#endif
   double profile_start = ProfileStart();
   /* Short deadline wait: a fixed 1ms sleep on every presentation-only
    * iteration unnecessarily overshoots near deadlines. */
@@ -337,9 +368,9 @@ static void WaitUntil(double deadline) {
   while (now < deadline) {
     double remaining_ms = (deadline - now) * 1000;
     if (remaining_ms > 1.5)
-      SDL_Delay((Uint32)(remaining_ms - 0.5));
+      HostSleepMs((Uint32)(remaining_ms - 0.5));
     else
-      SDL_Delay(0);
+      HostSleepMs(0);
     now = MonotonicSeconds();
   }
   ProfileEnd(kProfileWait, profile_start);
@@ -1885,7 +1916,7 @@ static void RunSavestateMenuLoop(bool *running) {
     OverlaySelftestPadTick(frames);
     snes_savestate_menu_poll_nav(OverlayNavInputs(), SDL_GetTicks());
     PresentFrozenWithOverlay();
-    SDL_Delay(8);
+    HostSleepMs(8);
     frames++;
   }
   g_overlay_modal = false;
@@ -1953,7 +1984,7 @@ static void RunRewindLoop(bool *running) {
       prev_pad = pad;
     }
     PresentFrozenWithOverlay();
-    SDL_Delay(8);
+    HostSleepMs(8);
     frames++;
   }
   g_overlay_modal = false;
@@ -2015,7 +2046,13 @@ void RtlApuUnlock(void) {
     g_audio_consumer_stalled = false;
   if (g_apu_lock_depth == 0 && g_audio_producer_active &&
       !g_audio_consumer_stalled &&
-      dsp_available(g_snes->apu->dsp) > HOST_AUDIO_HIGH_WATER) {
+      dsp_available(g_snes->apu->dsp) > HOST_AUDIO_HIGH_WATER
+#if defined(__EMSCRIPTEN__)
+      /* A browser drains audio only when this thread yields; waiting here
+       * cannot make progress. Real-time pacing bounds production instead. */
+      && 0
+#endif
+      ) {
     /* Fast hosts can generate a multi-frame loader's PCM in milliseconds.
      * Let the device drain it before the bounded ring overflows. Always
      * release the mutex while waiting, and stop waiting if the device stalls. */
@@ -3297,6 +3334,10 @@ int snesrecomp_desktop_main(const SnesDesktopHostGame *game, int argc, char **ar
   SDL_SetMainReady();
   /* Return convention flipped in SDL3 (0 == success became true == success),
    * so this MUST go through the shim. */
+#if defined(__EMSCRIPTEN__)
+  /* SDL_Delay must not suspend: only HostSleepMs's callers are instrumented. */
+  SDL_SetHint("SDL_EMSCRIPTEN_ASYNCIFY", "0");
+#endif
   if (!snesrecomp_sdl_init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER)) {
     host_report_breadcrumb("SDL_Init FAILED: %s", SDL_GetError());
     printf("Failed to init SDL: %s\n", SDL_GetError());
@@ -3603,9 +3644,13 @@ error_reading:;
 
   while (running) {
 #if defined(__EMSCRIPTEN__)
-    /* A browser tab owns this thread: hand it back once per frame so it can
-     * deliver input, audio and the presented canvas (-sASYNCIFY). */
-    emscripten_sleep(0);
+    /* WaitUntil yields once per vsync when the game is on time. A machine
+     * that falls behind never reaches it, so still hand the tab back at
+     * least every 50 ms to deliver input, audio and the canvas. */
+    if (MonotonicSeconds() - g_web_last_yield > 0.05) {
+      host_wait_animation_frame();
+      g_web_last_yield = MonotonicSeconds();
+    }
 #endif
     g_profile_frame = frameCtr + 1;
     if (profile_requested && !g_profile && g_profile_frame >= profile_first) {
@@ -3685,7 +3730,7 @@ error_reading:;
     if (g_paused && !g_savestate_menu_hotkey && !g_rewind_hotkey &&
         !g_open_launcher_hotkey) {
       snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
-      SDL_Delay(16);
+      HostSleepMs(16);
       continue;
     }
 
@@ -3777,7 +3822,7 @@ error_reading:;
         /* Do not repay a transport stall as a wall-clock turbo burst. The
          * network's explicit catch-up budget above owns peer catch-up. */
         snes_host_clock_reset(&video_clock, MonotonicSeconds(), g_simulation_hz, presentation_hz);
-        SDL_Delay(1);
+        HostSleepMs(1);
       }
       g_present_alpha = 1;
       DrawPpuFrameWithPerf();
