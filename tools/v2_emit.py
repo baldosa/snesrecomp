@@ -266,6 +266,8 @@ def _generate(args, parser, cfg_dir, *, symbol_roots=(), variant_roots=()):
     rom_sha256_hex = hashlib.sha256(rom).hexdigest()
     rom_image_size = len(rom)
     parsed = _load_cfgs(cfg_dir)
+    from v2 import widths as _widths
+    _widths.PACED_BUS = any(getattr(cfg, 'paced_bus', False) for _b, _p, cfg in parsed)
     # cfg entry_mx_at/manual func overrides remain authoritative when a
     # symbol requests an AOT root at an already configured entry.
     entry_modes = {

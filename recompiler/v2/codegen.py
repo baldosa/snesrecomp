@@ -23,6 +23,7 @@ into a per-function emit driver (replacing the v1 emit_function) and
 run the full SMW regen against it.
 """
 
+from v2 import widths as _widths_mod
 import sys
 import pathlib
 
@@ -2696,7 +2697,9 @@ def _emit_blockmove(op: BlockMove) -> List[str]:
         f"        return interp_bridge_lle_yield_unwind(cpu, {_transfer_target_expr(_CURRENT_SOURCE_PC24, False)});",
         "      }",
         "      cpu->cycles += 7;",
-        f"      cpu->master_cycles += 7 * {speed_expr};",
+        (f"      cpu->master_cycles += 3 * {speed_expr} + 12;"
+         if _widths_mod.PACED_BUS else
+         f"      cpu->master_cycles += 7 * {speed_expr};"),
         "    }",
         "  } while (cpu->A != 0xFFFF);",
         "}",

@@ -206,6 +206,15 @@ RecompReturn cpu_dispatch_pc(CpuState *cpu, uint32 pc24, uint16 miss_restore) {
     cpu->S = miss_restore;
     return RECOMP_RETURN_NORMAL;
 }
+RecompReturn cpu_dispatch_pc_from(CpuState *cpu, uint32 pc24, uint16 miss_restore,
+                                  uint32 source_pc24) {
+    (void)source_pc24;
+    return cpu_dispatch_pc(cpu, pc24, miss_restore);
+}
+void Die(const char *error) {
+    fprintf(stderr, "Die: %s\n", error);
+    exit(1);
+}
 RecompReturn cpu_dispatch_pc_paired(CpuState *cpu, uint32 pc24,
                                     uint8 frame_size) {
     cpu->host_return_valid = frame_size;

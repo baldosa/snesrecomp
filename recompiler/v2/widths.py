@@ -186,6 +186,14 @@ def low_byte(field: str) -> str:
 # `"cpu_write8"` / `"cpu_write16"` C-string emissions outside this
 # module. New emitters must call `widths.read_fn(width)` etc.
 
+# Region-paced guest bus (cfg directive `paced_bus`, set by tools/v2_emit.py).
+# Generated guest reads/writes call cpu_*_paced, which charge each byte at its
+# region speed, and block constants charge only opcode/operand fetches (code
+# speed) and internal cycles (6 master clocks): the interpreter tier's model,
+# so both tiers advance the master clock identically.
+PACED_BUS = False
+
+
 def read_fn(width: int) -> str:
     """C function name for a width-bound memory read."""
     return "cpu_read8" if width == 1 else "cpu_read16"

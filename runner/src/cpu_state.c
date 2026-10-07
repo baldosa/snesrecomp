@@ -1118,10 +1118,6 @@ static RecompReturn (*_cpu_dispatch_lookup(CpuState *cpu, uint32 pc24))(CpuState
     return NULL;
 }
 
-int g_dispatch_handoff_depth = 0;
-int g_dispatch_handoff_missed = 0;
-uint32 g_dispatch_handoff_miss_pc24 = 0;
-
 static int dispatch_handoff_capturing(void) {
     extern int interp_bridge_depth(void);
     return g_dispatch_handoff_depth != 0 &&

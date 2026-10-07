@@ -785,6 +785,12 @@ static void lle_unwind_arm(uint32_t pc24, int owner_depth, int is_deadline,
 int interp_bridge_in_lle_scheduler(void) { return s_lle_sched_depth > 0; }
 int interp_bridge_depth(void) { return s_interp_bridge_depth; }
 
+/* Native hand-off chain state (declared in cpu_state.h; see
+ * bridge_native_handoff). Defined here, with the hand-off that owns it. */
+int g_dispatch_handoff_depth = 0;
+int g_dispatch_handoff_missed = 0;
+uint32 g_dispatch_handoff_miss_pc24 = 0;
+
 static int s_native_handoff_enabled;
 void interp_bridge_set_native_handoff(int enabled) { s_native_handoff_enabled = enabled != 0; }
 /* Tight memory polls (codegen: has_lle_memory_poll) hand back to the

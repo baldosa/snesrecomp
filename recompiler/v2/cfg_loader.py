@@ -137,6 +137,7 @@ class BankCfg:
     # Lets a fresh game project ship a minimal bank00.cfg with just
     # the one directive instead of hand-decoding the vector table.
     auto_vectors: bool = False
+    paced_bus: bool = False
     # `tier_down_stubs` directive — when present in ANY cfg, v2_regen emits
     # cross-ROM-bank unresolved-function stubs (unresolved_stubs_v2.c) as
     # interpreter tier-downs (interp_tier_dispatch_bank_miss) that RUN the real
@@ -299,6 +300,14 @@ def load_bank_cfg(path: str) -> BankCfg:
             # other banks.
             if head == 'auto_vectors':
                 cfg.auto_vectors = True
+                continue
+
+            # paced_bus -- game-wide: generated guest bus accesses charge their
+            # region speed through the cpu_*_paced accessors and block
+            # constants charge only fetches and internal cycles, so the AOT
+            # master clock matches the interpreter tier (recompiler/v2/widths.py).
+            if head == 'paced_bus':
+                cfg.paced_bus = True
                 continue
 
             # tier_down_stubs — opt into the Phase-4 bank-miss interpreter

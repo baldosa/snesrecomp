@@ -17,6 +17,7 @@ Returns a complete `void <func_name>(CpuState *cpu) { ... }` C source
 string.
 """
 
+import re
 import os
 import sys
 import pathlib
@@ -80,6 +81,34 @@ def _block_cycle_const(pairs) -> int:
         return 0
     const, _dynamics = block_static_cycles(items)
     return const
+
+
+_BUS_RE = re.compile(r"\bcpu_(read|write)(8|16)\(")
+_PACED_RE = re.compile(r"\bcpu_(?:read|write)(8|16)_paced\(")
+
+
+def _pace_bus_lines(lines):
+    """Route a block's guest bus accesses through the region-paced runtime
+    accessors (widths.PACED_BUS). Host bookkeeping reads of the paired-call
+    return frame (_host_rp*) are not guest accesses and stay unpaced. Returns
+    (lines, data_bytes): the bytes those accessors will charge themselves."""
+    out, data_bytes = [], 0
+    for ln in lines:
+        if "_host_rp" not in ln:
+            ln = _BUS_RE.sub(lambda m: f"cpu_{m.group(1)}{m.group(2)}_paced(", ln)
+        data_bytes += sum(1 if m.group(1) == "8" else 2 for m in _PACED_RE.finditer(ln))
+        out.append(ln)
+    return out, data_bytes
+
+
+def _paced_block_master(cycles, fetch_bytes, data_bytes, speed_expr, speed_const=None):
+    """Static master clocks of a paced block: every opcode/operand byte at the
+    code region's speed plus the remaining (internal) cycles at 6; data bytes
+    are charged by the paced accessors at run time."""
+    internal = max(0, cycles - fetch_bytes - data_bytes)
+    if speed_const is not None:
+        return str(fetch_bytes * speed_const + internal * 6)
+    return f"{fetch_bytes} * {speed_expr} + {internal * 6}"
 
 
 def _block_speed(bank: int, pc: int):
@@ -1495,7 +1524,8 @@ def emit_function(rom: bytes, bank: int, start: int,
                 continue
             # Axis-2 step C dynamics: charge runtime-only modifiers (D.l != 0,
             # abs,X/Y read page-cross) for this instruction before its effect.
-            for _ln in _dynamic_charge_lines(di_insn, _blk_spd_expr):
+            from v2 import widths as _widths
+            for _ln in _dynamic_charge_lines(di_insn, "6" if _widths.PACED_BUS else _blk_spd_expr):
                 lines.append(_ln)
             for op in ir_ops:
                 if isinstance(op, CondBranch):
@@ -1512,9 +1542,11 @@ def emit_function(rom: bytes, bank: int, start: int,
                         # block const charged the not-taken base). Native mode;
                         # the emulation-only page-cross +1 is omitted (SNES game
                         # code runs e=0).
+                        from v2 import widths as _widths
+                        _taken_spd = "6" if _widths.PACED_BUS else _blk_spd_expr
                         lines.append(
                             f"if ({pred}) {{ cpu->cycles += 1; "
-                            f"cpu->master_cycles += {_blk_spd_expr}; {target_stmt} }}")
+                            f"cpu->master_cycles += {_taken_spd}; {target_stmt} }}")
                     if fall is not None:
                         lines.append(_goto_or_return(fall, source_pc24=blk_pc24)
                                      + " /* fall-through */")
@@ -2154,10 +2186,17 @@ def emit_function(rom: bytes, bank: int, start: int,
         # Axis-5: also charge the region-weighted MASTER clocks (CPU cycles x
         # code-region speed) into cpu->master_cycles, which paces the SPC700.
         _cyc_const = _block_cycle_const(block_per_insn_ir.get(key, []))
+        from v2 import widths as _widths
+        if _widths.PACED_BUS:
+            block_lines[key], _data_bytes = _pace_bus_lines(block_lines[key])
         if _cyc_const:
             src.append(f'    cpu->cycles += {_cyc_const};')
             _spd_expr, _spd_const = _block_speed(bank, key.pc)
-            if _spd_const is not None:
+            if _widths.PACED_BUS:
+                _fetch = sum(int(p[0].length) for p in block_per_insn_ir.get(key, []))
+                src.append('    cpu->master_cycles += ' + _paced_block_master(
+                    _cyc_const, _fetch, _data_bytes, _spd_expr, _spd_const) + ';')
+            elif _spd_const is not None:
                 src.append(f'    cpu->master_cycles += {_cyc_const * _spd_const};')
             else:
                 src.append(f'    cpu->master_cycles += {_cyc_const} * {_spd_expr};')

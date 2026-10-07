@@ -13,7 +13,7 @@ def test_pure_memory_self_poll_unwinds_to_lle_interpreter():
     src = emit_function(_rom(code), bank=0, start=0x8000,
                         entry_m=0, entry_x=0, end=0x800D)
 
-    assert "if (interp_bridge_in_lle_scheduler())" in src
+    assert "if (interp_bridge_poll_yields_to_lle())" in src
     assert "interp_bridge_lle_yield_unwind(cpu, (((uint32)cpu->PB << 16) | 0x8000u))" in src
 
 
@@ -23,4 +23,4 @@ def test_counter_loop_stays_compiled():
     src = emit_function(_rom(code), bank=0, start=0x8000,
                         entry_m=1, entry_x=1, end=0x8006)
 
-    assert "interp_bridge_in_lle_scheduler()" not in src
+    assert "interp_bridge_poll_yields_to_lle()" not in src
