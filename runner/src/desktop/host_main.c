@@ -349,13 +349,30 @@ EM_ASYNC_JS(void, host_wait_animation_frame, (void), {
   await new Promise((resolve) => requestAnimationFrame(() => resolve()));
 });
 static double g_web_last_yield;
+/* Counters for the web page's ?debug overlay (web_debug_stat). */
+double g_web_loop_stats[4];  /* frames run, vsync waits, forced yields, ms running+presenting frames */
 #endif
+
+/* The clock reading the pacer compares to its deadlines. On the web the loop
+ * wakes once per vsync, a little before or after the deadline; waiting for
+ * the next vsync over a fraction of a millisecond dropped a frame every few
+ * vsyncs (53 fps and audio underruns on a 60 Hz display). Half a SNES frame
+ * of slack runs on the nearest vsync instead; the deadlines still advance by
+ * exactly one SNES frame, so the average rate is unchanged. */
+static double PacingNow(void) {
+#if defined(__EMSCRIPTEN__)
+  return MonotonicSeconds() + 0.4 / g_simulation_hz;
+#else
+  return MonotonicSeconds();
+#endif
+}
 
 static void WaitUntil(double deadline) {
 #if defined(__EMSCRIPTEN__)
   /* The loop re-checks its clock after every wait, so one vsync is enough
    * (a 120/144 Hz display just waits again). */
   if (MonotonicSeconds() < deadline) {
+    ++g_web_loop_stats[1];
     host_wait_animation_frame();
     g_web_last_yield = MonotonicSeconds();
   }
@@ -402,6 +419,11 @@ static bool PresentationDecoupled(void) { return WantedPresentationHz(0) > 0; }
  * elsewhere and must not also wait on the driver. */
 static int VSyncInterval(void) {
   if (PresentationDecoupled() || g_config.disable_frame_delay) return 0;
+#if defined(__EMSCRIPTEN__)
+  /* The loop already waits for each animation frame (WaitUntil); a swap
+   * interval on top made every present block for a further vsync. */
+  return 0;
+#endif
   switch (g_config.vsync) {
     case kSnesVSync_Off:      return 0;
     case kSnesVSync_Adaptive: return -1;
@@ -3648,6 +3670,7 @@ error_reading:;
      * that falls behind never reaches it, so still hand the tab back at
      * least every 50 ms to deliver input, audio and the canvas. */
     if (MonotonicSeconds() - g_web_last_yield > 0.05) {
+      ++g_web_loop_stats[2];
       host_wait_animation_frame();
       g_web_last_yield = MonotonicSeconds();
     }
@@ -3760,7 +3783,7 @@ error_reading:;
     if (snes_netplay_active()) {
       /* Refused mid-match; dropped rather than left to fire when it ends. */
       g_open_launcher_hotkey = 0;
-      if (!snes_host_clock_simulation_due(&video_clock, MonotonicSeconds())) {
+      if (!snes_host_clock_simulation_due(&video_clock, PacingNow())) {
         snes_netplay_pump();
         WaitUntil(video_clock.next_simulation);
         continue;
@@ -3850,7 +3873,7 @@ error_reading:;
       snes_host_clock_reset(&video_clock, video_now, g_simulation_hz, presentation_hz);
       g_reset_clock = false;
     }
-    if (paced_realtime && !snes_host_clock_simulation_due(&video_clock, MonotonicSeconds())) {
+    if (paced_realtime && !snes_host_clock_simulation_due(&video_clock, PacingNow())) {
       if (snes_host_clock_presentation_due(&video_clock, MonotonicSeconds())) {
         if (paced_custom) {
           double presented_at = MonotonicSeconds();
@@ -4033,6 +4056,9 @@ error_reading:;
      * than a branch. Never during turbo: speculating about frames that are
      * being skipped costs work for a picture nobody is reading. */
     bool runahead_captured = false;
+#if defined(__EMSCRIPTEN__)
+    double web_frame_start = MonotonicSeconds();
+#endif
     {
       uint32 word = inputs | GetActiveControllers() | debug_server_get_controller_active_mask();
       if (game->filter_frame_inputs) {
@@ -4095,6 +4121,12 @@ error_reading:;
     ProfileEnd(kProfileTrace, profile_start);
     if (paced_realtime) {
       bool keep_debt = game->keep_pacing_debt && game->keep_pacing_debt();
+#if defined(__EMSCRIPTEN__)
+      /* Measured after the frame ran, the clock is always past a wake that
+       * came on time; dropping the debt there skips the next vsync. Keep the
+       * phase unless the tab really stalled (hidden, a long GC). */
+      keep_debt = keep_debt || MonotonicSeconds() - video_clock.next_simulation < 0.1;
+#endif
       snes_host_clock_simulation_done(&video_clock, MonotonicSeconds(), keep_debt,
                                       RtlLastFramePeriods());
     }
@@ -4110,6 +4142,10 @@ error_reading:;
       ++presentations;
       snes_host_clock_presentation_done(&video_clock, presented_at);
     }
+#if defined(__EMSCRIPTEN__)
+    ++g_web_loop_stats[0];
+    g_web_loop_stats[3] += (MonotonicSeconds() - web_frame_start) * 1000;
+#endif
     if (run_frames && frameCtr >= run_frames) {
       running = false;
       exit_reason = "RUN_FRAMES reached";
