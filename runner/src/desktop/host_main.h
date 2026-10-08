@@ -194,6 +194,14 @@ typedef struct SnesDesktopHostGame {
   int (*prepare_netplay)(int from_lobby, char *reason, size_t reason_cap);
   /* Validate that required title plugins actually activated before linking. */
   int (*netplay_ready)(char *reason, size_t reason_cap);
+
+  /* Optional: rewrite the controller word of each simulated frame just before
+   * it runs (bits 0-11 pad 1, 12-23 pad 2, 30-31 ports present). `frame`
+   * counts simulated frames from 0. A port's own lockstep link (e.g. the web
+   * build's browser-to-browser play) supplies it; it may block until the
+   * peer's input for the frame arrives. When set, run-ahead is bypassed so
+   * exactly one frame runs per word. NULL: inputs are used as polled. */
+  uint32_t (*filter_frame_inputs)(uint32_t word, unsigned frame);
 } SnesDesktopHostGame;
 
 /* The whole program. Returns the process exit code. */

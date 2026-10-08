@@ -4034,8 +4034,12 @@ error_reading:;
      * being skipped costs work for a picture nobody is reading. */
     bool runahead_captured = false;
     {
-      const uint32 word = inputs | GetActiveControllers() | debug_server_get_controller_active_mask();
-      if (g_turbo || !snes_runahead_run_frame(word))
+      uint32 word = inputs | GetActiveControllers() | debug_server_get_controller_active_mask();
+      if (game->filter_frame_inputs) {
+        static unsigned filtered_frames;
+        word = game->filter_frame_inputs(word, filtered_frames++);
+        RtlRunFrame(word);
+      } else if (g_turbo || !snes_runahead_run_frame(word))
         RtlRunFrame(word);
       else
         runahead_captured = true;   /* it rasterised the speculated frame */
