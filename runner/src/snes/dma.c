@@ -381,12 +381,29 @@ void dma_initHdma(Dma* dma) {
   }
 }
 
+/* Uniracers' split screen rewrites the OAM high-table byte of sprites
+ * 96-99 by HDMA at lines 0 and 112 (top view: rider 1's sprites, bottom:
+ * rider 2's). It leaves OAMADD at $100, but on hardware an OAM write during
+ * rendering lands where the PPU's sprite fetch left the internal address,
+ * which here is the word holding that byte, $10C. Nobody models that
+ * invalidation exactly; snes9x pins the address for this one game
+ * (dma.cpp, SNESGameFixes.Uniracers), and so does this. Set by the game. */
+bool g_hdma_oamdata_at_10c;
+
+static void hdma_pin_oam_address(Dma* dma, const DmaChannel* ch) {
+  if (!g_hdma_oamdata_at_10c || ch->bAdr != 0x04) return;
+  dma->snes->ppu->oamAdr = 0x0C;
+  dma->snes->ppu->oamInHigh = true;
+  dma->snes->ppu->oamSecondWrite = false;
+}
+
 void dma_primeHdmaFirstLine(Dma* dma) {
   for (int i = 0; i < 8; i++) {
     DmaChannel* ch = &dma->channel[i];
     if (!ch->hdmaActive || ch->terminated || !ch->doTransfer) continue;
     DmaChannel save = *ch;
     int len = transferLength[ch->mode & 7];
+    hdma_pin_oam_address(dma, ch);
     for (int j = 0; j < len; j++) {
       uint8_t bAdr = (uint8_t)(ch->bAdr + bAdrOffsets[ch->mode & 7][j]);
       g_ppu_wlog_src = kPpuWlogHdma;
@@ -419,6 +436,7 @@ void dma_doHdma(Dma* dma) {
 
     if (ch->doTransfer) {
       int len = transferLength[ch->mode & 7];
+      hdma_pin_oam_address(dma, ch);
       for (int j = 0; j < len; j++) {
         uint8_t bAdr = (uint8_t)(ch->bAdr + bAdrOffsets[ch->mode & 7][j]);
         g_ppu_wlog_src = kPpuWlogHdma;
